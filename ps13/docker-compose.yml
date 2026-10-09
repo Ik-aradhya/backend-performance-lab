@@ -1,0 +1,24 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: course_progress
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d course_progress"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  app:
+    build: ./app
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@db:5432/course_progress
+    ports:
+      - "8001:8000"
+    depends_on:
+      db:
+        condition: service_healthy
