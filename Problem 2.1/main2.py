@@ -1,246 +1,90 @@
+import sqlite3
 import time
-
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
-
-app = FastAPI()
+import random
+import statistics
 
 
-# =========================
-# Response Models
-# =========================
-
-class CourseProgress(BaseModel):
-    course_id: int
-    title: str
-    completed_lessons: int
-    total_lessons: int
-    progress: int
+DB_NAME = "courses.db"
+NUM_ROWS = 100_000
+NUM_RUNS = 100
+USER_ID = 5000
 
 
-class CourseProgressResponse(BaseModel):
-    user_id: int
-    courses: list[CourseProgress]
+def create_database():
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
 
+    cursor.execute("DROP TABLE IF EXISTS courses")
 
-# =========================
-# Fake Database
-# =========================
-
-users = {
-    42: {"id": 42, "name": "Aradhya"}
-}
-
-courses = [
-    {"id": 1, "user_id": 42, "title": "Python"},
-    {"id": 2, "user_id": 42, "title": "FastAPI"},
-    {"id": 3, "user_id": 42, "title": "PostgreSQL"},
-]
-
-lessons = [
-    {"id": 1, "course_id": 1},
-    {"id": 2, "course_id": 1},
-    {"id": 3, "course_id": 1},
-
-    {"id": 4, "course_id": 2},
-    {"id": 5, "course_id": 2},
-
-    {"id": 6, "course_id": 3},
-    {"id": 7, "course_id": 3},
-    {"id": 8, "course_id": 3},
-]
-
-progress = {
-    (42, 1): {1, 2},
-    (42, 2): {4},
-    (42, 3): {6, 7},
-}
-
-
-# =========================
-# Fake DB Layer
-# =========================
-
-class FakeDB:
-
-    def __init__(self):
-        self.query_count = 0
-
-    def _query(self):
-        self.query_count += 1
-        time.sleep(0.005)
-
-    def get_user(self, user_id: int):
-        self._query()
-
-        return users.get(user_id)
-
-    def get_courses(self, user_id: int):
-        self._query()
-
-        return [
-            course
-            for course in courses
-            if course["user_id"] == user_id
-        ]
-
-    def get_lessons(self, course_id: int):
-        self._query()
-
-        return [
-            lesson
-            for lesson in lessons
-            if lesson["course_id"] == course_id
-        ]
-
-    def get_progress(self, user_id: int, course_id: int):
-        self._query()
-
-        return progress.get(
-            (user_id, course_id),
-            set()
+    cursor.execute("""
+        CREATE TABLE courses (
+            id INTEGER PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            title TEXT NOT NULL
         )
+    """)
 
-    # -------------------------
-    # Optimized batch methods
-    # -------------------------
-
-    def get_all_lessons(self, course_ids):
-        self._query()
-
-        return [
-            lesson
-            for lesson in lessons
-            if lesson["course_id"] in course_ids
-        ]
-
-    def get_all_progress(self, user_id: int, course_ids):
-        self._query()
-
-        return {
-            course_id: progress.get(
-                (user_id, course_id),
-                set()
-            )
-            for course_id in course_ids
-        }
-
-# Create DB instance once
-db = FakeDB()
-
-@app.get(
-    "/course-progress/{user_id}",
-    response_model=CourseProgressResponse
-)
-def get_course_progress(user_id: int):
-
-    # 1. DB work
-    db_start = time.perf_counter()
-
-    user = db.get_user(user_id)
-
-    if not user:
-        raise HTTPException(
-            status_code=404,
-            detail="User not found"
-        )
-
-    user_courses = db.get_courses(user_id)
-
-    course_ids = [
-        course["id"]
-        for course in user_courses
+    data = [
+        (i, random.randint(1, 10_000), f"Course {i}")
+        for i in range(1, NUM_ROWS + 1)
     ]
 
-    all_lessons = db.get_all_lessons(course_ids)
-
-    all_progress = db.get_all_progress(
-        user_id,
-        course_ids
+    cursor.executemany(
+        "INSERT INTO courses (id, user_id, title) VALUES (?, ?, ?)",
+        data,
     )
 
-    db_end = time.perf_counter()
+    conn.commit()
+    conn.close()
 
-    # 2. Python processing
-    processing_start = time.perf_counter()
 
-    result = []
+def benchmark_query(conn, user_id, runs=NUM_RUNS):
+    cursor = conn.cursor()
+    timings = []
 
-    for course in user_courses:
+    for _ in range(runs):
+        start = time.perf_counter()
 
-        course_id = course["id"]
-
-        course_lessons = [
-            lesson
-            for lesson in all_lessons
-            if lesson["course_id"] == course_id
-        ]
-
-        completed = all_progress.get(
-            course_id,
-            set()
+        cursor.execute(
+            "SELECT * FROM courses WHERE user_id = ?",
+            (user_id,),
         )
+        cursor.fetchall()
 
-        total_lessons = len(course_lessons)
-        completed_lessons = len(completed)
+        end = time.perf_counter()
+        timings.append((end - start) * 1000)
 
-        progress_percentage = (
-            int((completed_lessons / total_lessons) * 100)
-            if total_lessons > 0
-            else 0
-        )
-
-        result.append(
-            CourseProgress(
-                course_id=course_id,
-                title=course["title"],
-                completed_lessons=completed_lessons,
-                total_lessons=total_lessons,
-                progress=progress_percentage,
-            )
-        )
-
-    processing_end = time.perf_counter()
-
-    # 3. Response/model creation
-    # response_start = time.perf_counter()
-
-    # response = CourseProgressResponse(
-    #     user_id=user_id,
-    #     courses=result
-    # )
-
-    # response_end = time.perf_counter()
-
-    # print(f"DB time: {(db_end - db_start) * 1000:.2f} ms")
-    # print(f"Python processing time: {(processing_end - processing_start) * 1000:.2f} ms")
-    # print(f"Response/model time: {(response_end - response_start) * 1000:.2f} ms")
-    # print(f"Total queries: {db.query_count}")
-
-    # return response
+    return timings
 
 
-        # 3. Response/model creation
-    response_start = time.perf_counter()
+def print_stats(label, timings):
+    print(f"\n{label}")
+    print(f"Average: {statistics.mean(timings):.4f} ms")
+    print(f"P50:     {statistics.median(timings):.4f} ms")
+    print(f"P95:     {statistics.quantiles(timings, n=100)[94]:.4f} ms")
+    print(f"P99:     {statistics.quantiles(timings, n=100)[98]:.4f} ms")
 
-    response = CourseProgressResponse(
-        user_id=user_id,
-        courses=result
-    )
 
-    response_end = time.perf_counter()
+if __name__ == "__main__":
+    create_database()
 
-    # 4. JSON serialization
-    json_start = time.perf_counter()
+    conn = sqlite3.connect(DB_NAME)
 
-    response.model_dump_json()
+    # Stage 1: Without index
+    conn.execute("DROP INDEX IF EXISTS idx_courses_user_id")
+    conn.commit()
 
-    json_end = time.perf_counter()
+    timings_without_index = benchmark_query(conn, USER_ID)
+    print_stats("WITHOUT INDEX", timings_without_index)
 
-    print(f"DB time: {(db_end - db_start) * 1000:.2f} ms")
-    print(f"Python processing time: {(processing_end - processing_start) * 1000:.2f} ms")
-    print(f"Response/model time: {(response_end - response_start) * 1000:.2f} ms")
-    print(f"JSON serialization time: {(json_end - json_start) * 1000:.2f} ms")
-    print(f"Total queries: {db.query_count}")
+    # Stage 2: With index
+    conn.execute("""
+        CREATE INDEX idx_courses_user_id
+        ON courses(user_id)
+    """)
+    conn.commit()
 
-    return response
+    timings_with_index = benchmark_query(conn, USER_ID)
+    print_stats("WITH INDEX", timings_with_index)
+
+    conn.close()
